@@ -5,19 +5,6 @@ robot:
   # Frames per second for system updates (default: 50)
   fps: 50                         
 
-  # Leader Arm Configuration
-  leader_arms:
-    - # Unique name for the solo leader arm (naming convention: leader_<unique_identification>)
-      name: leader_solo           
-
-      # Model type for compatibility and calibration
-      model: aloha_wx250s          
-
-      # Orientation or side of the arm (options: left, right)
-      orientation: right           
-
-      # Transformation matrix for spatial alignment (used in RVIZ or other visualization tools)
-      transform: [-0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]  
 
   # Follower Arm Configuration
   follower_arms:
@@ -57,7 +44,7 @@ robot:
         enable_auto_exposure: false          
 
       # Overall depth mode status (default: false)
-      enable_depth: false                    
+      enable_depth: true
 
       # Infrared camera settings (default: false for all)
       enable_infra: false                    
@@ -73,13 +60,13 @@ robot:
         name: camera_wrist_right             
 
         # Serial number for device identification
-        serial_no: ""            
+        serial_no: "230322270085"            
 
       - # Identifier for a high-position camera
         name: camera_high                    
 
         # Serial number for device identification
-        serial_no: ""            
+        serial_no: "218622275669"            
 
   # Base Configuration
   # Indicates whether a robot base is used (default: false). Use 'true' for mobile robots like aloha_mobile
