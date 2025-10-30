@@ -117,9 +117,6 @@ def main(args: dict) -> None:
         follower_name: JointSingleCommand(name='gripper') for follower_name in robots if 'follower' in follower_name
     }
 
-
-    base_joint_positions
-
     # Main loop
     while rclpy.ok():
 
