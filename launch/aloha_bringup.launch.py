@@ -367,7 +367,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "launch_leaders",
-            default_value="true",
+            default_value="false",
             choices=("true", "false"),
             description=(
                 "if `true`, launches both the leader and follower arms; if `false, just the "
@@ -391,7 +391,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "use_cameras",
-            default_value="true",
+            default_value="false",
             choices=("true", "false"),
             description="if `true`, launches the camera drivers.",
         )
