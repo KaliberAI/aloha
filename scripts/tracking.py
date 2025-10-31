@@ -27,9 +27,89 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.constants import S_TO_NS
 from typing import Dict
+import time
+import math
 
+def demo_viper_breathing(robots, dt, period=8.0,
+                         base_amplitude=0.35,
+                         phase_offset=0.6,
+                         decay_factor=0.55):
+    """
+    Produces a breathing / viper-like coordinated wave across all arm joints.
+    Only affects the 6 arm joints (waist → wrist_rotate), leaves gripper untouched.
+    """
+    t = time.time()
+    omega = 2 * math.pi / period
 
+    for name, bot in robots.items():
+        if 'follower' not in name:
+            continue
 
+        # Expected joint order: [waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate, gripper, ...]
+        joint_names = bot.arm.group_info.joint_names
+        n = min(6, len(joint_names))  # first six are arm joints
+
+        amplitudes = [base_amplitude * (decay_factor ** i) for i in range(n)]
+        q_cmd = []
+
+        for i in range(n):
+            # alternate phase direction for a natural breathing feel
+            phi = i * phase_offset
+            q = amplitudes[i] * math.sin(omega * t + phi)
+            q_cmd.append(q)
+
+        # pad with zeros for extra joints (gripper/fingers)
+        while len(q_cmd) < len(joint_names):
+            q_cmd.append(0.0)
+
+        msg = JointGroupCommand()
+        msg.name = 'arm'
+        msg.cmd = q_cmd
+        bot.arm.core.pub_group.publish(msg)
+
+def demo_gripper_wave(robots, dt, period=4.0):
+    """
+    Smoothly oscillate follower grippers open/close by directly publishing commands.
+    """
+    t = time.time() % period
+    phase = math.sin(2 * math.pi * t / period) * 0.5 + 0.5  # normalize 0–1
+    target_grip = FOLLOWER_GRIPPER_JOINT_CLOSE + \
+        phase * (FOLLOWER_GRIPPER_JOINT_OPEN - FOLLOWER_GRIPPER_JOINT_CLOSE)
+
+    for name, bot in robots.items():
+        if 'follower' not in name:
+            continue
+        cmd = JointSingleCommand(name='gripper', cmd=target_grip)
+        bot.gripper.core.pub_single.publish(cmd)
+
+from interbotix_xs_msgs.msg import JointSingleCommand
+
+def demo_base_rotation(robots, dt, period=10.0, amplitude=0.5, continuous=True):
+    """
+    Smoothly rotates only the base ('waist') joint of follower arms.
+    """
+    t = time.time()
+
+    for name, bot in robots.items():
+        if 'follower' not in name:
+            continue
+
+        waist_joint_name = bot.arm.group_info.joint_names[0]  # usually 'waist'
+
+        if continuous:
+            # Continuous rotation
+            waist_angle = (2 * math.pi * (t / period)) % (2 * math.pi)
+        else:
+            # Oscillation mode
+            waist_angle = amplitude * math.sin(2 * math.pi * t / period)
+
+        # Build a single-joint command
+        waist_cmd = JointSingleCommand()
+        waist_cmd.name = waist_joint_name
+        waist_cmd.cmd = waist_angle
+
+        # Publish directly to that joint's controller
+        bot.arm.core.pub_single.publish(waist_cmd)
 
 def opening_ceremony(robots: Dict[str, InterbotixManipulatorXS],
                      dt: float,
@@ -117,10 +197,17 @@ def main(args: dict) -> None:
         follower_name: JointSingleCommand(name='gripper') for follower_name in robots if 'follower' in follower_name
     }
 
+
+
     # Main loop
     while rclpy.ok():
 
         # TODO: do the demo
+        # demo_base_rotation(robots, dt, period=8.0, amplitude=0.6, continuous=False)
+
+        demo_base_rotation(robots, dt, period=8.0, amplitude=0.6, continuous=False)
+        
+        # demo_gripper_wave(robots, dt, period=5.0)
 
         # Sleep for the DT duration
         DT_DURATION = Duration(seconds=0, nanoseconds=dt * S_TO_NS)
