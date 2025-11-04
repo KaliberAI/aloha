@@ -29,7 +29,7 @@ from rclpy.constants import S_TO_NS
 from typing import Dict
 import time
 import math
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Float32
 
 def demo_viper_breathing(robots, dt, period=8.0,
                          base_amplitude=0.35,
@@ -59,9 +59,8 @@ def demo_viper_breathing(robots, dt, period=8.0,
             q = amplitudes[i] * math.sin(omega * t + phi)
             q_cmd.append(q)
 
-        # pad with zeros for extra joints (gripper/fingers)
-        while len(q_cmd) < len(joint_names):
-            q_cmd.append(0.0)
+        # q_cmd should only contain n (6) commands for the arm group
+        # No padding needed - the arm group only expects 6 joints
 
         msg = JointGroupCommand()
         msg.name = 'arm'
@@ -110,40 +109,51 @@ def demo_base_rotation(robots, dt, period=10.0, amplitude=0.5, continuous=True):
         # Publish directly to that joint's controller
         bot.arm.core.pub_single.publish(waist_cmd)
 
-def demo_multilink_wave_with_patient_found(robots, dt, patient_found_state,
-                                           period=8.0, amplitude=0.5, continuous=False, t=None,
-                                           gripper_period=4.0):
+
+
+
+def demo_multilink_wave_with_patient_found(
+    robots, dt, patient_found_state,
+    period=8.0, amplitude=0.5, continuous=False, t=None,
+    gripper_period=4.0
+):
     """
-    Natural multi-link sine motion (waist, shoulder, wrist) that pauses/resumes
+    Natural multi-link sine motion (waist, shoulder, elbow) that pauses/resumes
     smoothly and starts phase-aligned from current joint positions.
     When patient is found, arm stops moving but gripper continues to wave.
     """
+
     now = t if t is not None else time.time()
 
-    # Pause handling - when patient is found, move gripper in wave pattern
-    # --- Handle pause when patient is found ---
-    if patient_found_state.get('patient_found', False):
+    # --- Initialize persistent state fields ---
+    patient_found_state.setdefault('paused_time_offset', 0.0)
+    patient_found_state.setdefault('last_pause_time', None)
+    patient_found_state.setdefault('start_offsets', {})
+    patient_found_state.setdefault('last_q_cmd', {})
 
+    # ============================================================
+    # 1. Handle pause mode (patient found) → gripper continues waving
+    # ============================================================
+    if patient_found_state.get('patient_found', False):
         if patient_found_state['last_pause_time'] is None:
             patient_found_state['last_pause_time'] = now
 
-        # --- Initialize continuous gripper offset ---
-        if 'gripper_offset' not in patient_found_state:
-            patient_found_state['gripper_offset'] = 0.0
-        if 'last_gripper_time' not in patient_found_state:
-            patient_found_state['last_gripper_time'] = now
+        # Initialize gripper wave parameters if not set
+        patient_found_state.setdefault('gripper_offset', 0.0)
+        patient_found_state.setdefault('last_gripper_time', now)
 
-        # Increment gripper phase using actual time step
+        # Increment gripper phase using elapsed time
         dt_gripper = now - patient_found_state['last_gripper_time']
         patient_found_state['last_gripper_time'] = now
         patient_found_state['gripper_offset'] += dt_gripper
 
-        # Compute smooth sine wave for gripper
         gripper_phase = 2 * math.pi * patient_found_state['gripper_offset'] / gripper_period
-        phase = math.sin(gripper_phase) * 0.5 + 0.5  # normalize 0–1
+        phase = math.sin(gripper_phase) * 0.5 + 0.5  # normalize to 0–1
+
         target_grip = FOLLOWER_GRIPPER_JOINT_CLOSE + \
                       phase * (FOLLOWER_GRIPPER_JOINT_OPEN - FOLLOWER_GRIPPER_JOINT_CLOSE)
 
+        # Publish to all follower grippers
         for name, bot in robots.items():
             if 'follower' not in name:
                 continue
@@ -151,16 +161,52 @@ def demo_multilink_wave_with_patient_found(robots, dt, patient_found_state,
             bot.gripper.core.pub_single.publish(cmd)
 
         return
+
+    # ============================================================
+    # 2. If we just resumed from pause → fix offsets & apply fade-in
+    # ============================================================
     if patient_found_state['last_pause_time'] is not None:
+
+        
         paused_duration = now - patient_found_state['last_pause_time']
         patient_found_state['paused_time_offset'] += paused_duration
         patient_found_state['last_pause_time'] = None
+        
 
+        
+        for name, bot in robots.items():
+            if 'follower' not in name:
+                continue
+            # Only get the first 6 arm joints, not gripper/finger joints
+            joint_names = bot.arm.group_info.joint_names
+            n_arm = min(6, len(joint_names))
+            current_positions = bot.arm.core.joint_states.position[:n_arm]
+            patient_found_state['start_offsets'][name] = list(current_positions)
+
+        # Mark just resumed for smooth fade-in
+        patient_found_state['just_resumed'] = True
+        patient_found_state['resume_time'] = now
+
+        
+    # ============================================================
+    # 3. Generate continuous motion
+    # ============================================================
     adjusted_time = now - patient_found_state['paused_time_offset']
+    
     omega = 2 * math.pi / period
-    fade_duration = 2.0
-    fade_scale = min(1.0, adjusted_time / fade_duration)
 
+    # Fade in when first starting or right after resume
+    fade_duration = 2.0
+    if patient_found_state.get('just_resumed', False):
+        fade_scale = min(1.0, (now - patient_found_state['resume_time']) / fade_duration)
+        if fade_scale >= 1.0:
+            patient_found_state['just_resumed'] = False
+    else:
+        fade_scale = min(1.0, adjusted_time / fade_duration)
+
+    # ============================================================
+    # 4. Apply sine motion to each follower arm
+    # ============================================================
     for name, bot in robots.items():
         if 'follower' not in name:
             continue
@@ -168,40 +214,37 @@ def demo_multilink_wave_with_patient_found(robots, dt, patient_found_state,
         joint_names = bot.arm.group_info.joint_names
         n = min(6, len(joint_names))
 
-        # --- Initialize start offsets once ---
-        if 'start_offsets' not in patient_found_state:
-            patient_found_state['start_offsets'] = {}
-
+        # Initialize start offsets if not yet stored
         if name not in patient_found_state['start_offsets']:
-            # Capture the current arm pose as base offset
             current_positions = bot.arm.core.joint_states.position[:n]
             patient_found_state['start_offsets'][name] = list(current_positions)
 
         start_offsets = patient_found_state['start_offsets'][name]
+        
+        # Ensure start_offsets only contains arm joints (first 6)
+        if len(start_offsets) > n:
+            start_offsets = start_offsets[:n]
+            patient_found_state['start_offsets'][name] = start_offsets
 
-        # --- Natural wave pattern around those offsets ---
-        q_cmd = list(start_offsets)  # start from initial pose
-
-        q_cmd[0] += amplitude * math.sin(omega * adjusted_time)  # waist
+        # --- Natural wave pattern ---
+        q_cmd = list(start_offsets)
+        q_cmd[0] += amplitude * math.sin(omega * adjusted_time)         # waist
         if n > 1:
-            q_cmd[1] += 0.3 * amplitude * math.sin(omega * adjusted_time)  # shoulder
-
+            q_cmd[1] += 0.1 * amplitude * math.sin(omega * adjusted_time)  # shoulder
         if n > 2:
-            q_cmd[2] += 0.2 * amplitude * math.sin(omega * adjusted_time + 0.8 * math.pi )  # elbow
-        # if n > 4:
-        #     q_cmd[4] += 0.4 * amplitude * math.sin(omega * adjusted_time + math.pi / 2)  # wrist
+            q_cmd[2] += 0.1 * amplitude * math.sin(omega * adjusted_time + 0.8 * math.pi)  # elbow
 
-        # Apply fade-in scaling (so it gently ramps in)
+        # Apply fade-in scaling
         for i in range(len(q_cmd)):
             q_cmd[i] = start_offsets[i] + (q_cmd[i] - start_offsets[i]) * fade_scale
 
-        # Optional smoothing
-        if 'last_q_cmd' not in patient_found_state:
-            patient_found_state['last_q_cmd'] = {}
+        # Smooth interpolation with previous command
         if name not in patient_found_state['last_q_cmd']:
             patient_found_state['last_q_cmd'][name] = q_cmd
-
         last_q = patient_found_state['last_q_cmd'][name]
+        # Ensure last_q also only has n elements
+        if len(last_q) != len(q_cmd):
+            last_q = list(q_cmd)  # Reset if mismatch
         smoothed_q = [0.8 * l + 0.2 * q for l, q in zip(last_q, q_cmd)]
         patient_found_state['last_q_cmd'][name] = smoothed_q
 
@@ -209,6 +252,8 @@ def demo_multilink_wave_with_patient_found(robots, dt, patient_found_state,
         msg.name = 'arm'
         msg.cmd = smoothed_q
         bot.arm.core.pub_group.publish(msg)
+
+
 
 def demo_base_rotation_time_adjusted(robots, dt, t, period=10.0, amplitude=0.5, continuous=True):
     for name, bot in robots.items():
@@ -435,11 +480,12 @@ def main(args: dict) -> None:
         # Process callbacks to update patient_found_state
         rclpy.spin_once(node, timeout_sec=0.1)
 
-        # TODO: do the demo
+        
         # demo_base_rotation(robots, dt, period=8.0, amplitude=0.6, continuous=False)
         if not motion_state['initialized']:
             motion_state['start_time'] = time.time()
             motion_state['initialized'] = True
+
 
         elapsed_t = time.time() - motion_state['start_time']
 
@@ -453,7 +499,7 @@ def main(args: dict) -> None:
        
         demo_multilink_wave_with_patient_found(
             robots, dt, patient_found_state,
-            period=8.0, amplitude=0.7, continuous=False, t=elapsed_t
+            period=16.0, amplitude=0.8, continuous=False, t=elapsed_t
             )
         
        
