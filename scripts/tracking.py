@@ -29,7 +29,7 @@ from rclpy.constants import S_TO_NS
 from typing import Dict
 import time
 import math
-from std_msgs.msg import Bool, Float32
+from std_msgs.msg import Bool, Float64
 
 def demo_viper_breathing(robots, dt, period=8.0,
                          base_amplitude=0.35,
@@ -134,58 +134,138 @@ def demo_multilink_wave_with_patient_found(
     # ============================================================
     # 1. Handle pause mode (patient found) → gripper continues waving
     # ============================================================
+    # if patient_found_state.get('patient_found', False):
+    #     if patient_found_state['last_pause_time'] is None:
+    #         patient_found_state['last_pause_time'] = now
+
+    #     # Initialize gripper wave parameters if not set
+    #     patient_found_state.setdefault('gripper_offset', 0.0)
+    #     patient_found_state.setdefault('last_gripper_time', now)
+
+    #     # Increment gripper phase using elapsed time
+    #     dt_gripper = now - patient_found_state['last_gripper_time']
+    #     patient_found_state['last_gripper_time'] = now
+    #     patient_found_state['gripper_offset'] += dt_gripper
+
+    #     gripper_phase = 2 * math.pi * patient_found_state['gripper_offset'] / gripper_period
+    #     phase = math.sin(gripper_phase) * 0.5 + 0.5  # normalize to 0–1
+
+    #     target_grip = FOLLOWER_GRIPPER_JOINT_CLOSE + \
+    #                   phase * (FOLLOWER_GRIPPER_JOINT_OPEN - FOLLOWER_GRIPPER_JOINT_CLOSE)
+
+    #     # Publish to all follower grippers
+    #     for name, bot in robots.items():
+    #         if 'follower' not in name:
+    #             continue
+    #         cmd = JointSingleCommand(name='gripper', cmd=target_grip)
+    #         bot.gripper.core.pub_single.publish(cmd)
+
+    #     return
+
     if patient_found_state.get('patient_found', False):
         if patient_found_state['last_pause_time'] is None:
             patient_found_state['last_pause_time'] = now
 
-        # Initialize gripper wave parameters if not set
+            
+
+        # --- Gripper wave motion (same as before)
         patient_found_state.setdefault('gripper_offset', 0.0)
         patient_found_state.setdefault('last_gripper_time', now)
-
-        # Increment gripper phase using elapsed time
         dt_gripper = now - patient_found_state['last_gripper_time']
         patient_found_state['last_gripper_time'] = now
         patient_found_state['gripper_offset'] += dt_gripper
 
         gripper_phase = 2 * math.pi * patient_found_state['gripper_offset'] / gripper_period
-        phase = math.sin(gripper_phase) * 0.5 + 0.5  # normalize to 0–1
-
+        phase = math.sin(gripper_phase) * 0.5 + 0.5
         target_grip = FOLLOWER_GRIPPER_JOINT_CLOSE + \
-                      phase * (FOLLOWER_GRIPPER_JOINT_OPEN - FOLLOWER_GRIPPER_JOINT_CLOSE)
+            phase * (FOLLOWER_GRIPPER_JOINT_OPEN - FOLLOWER_GRIPPER_JOINT_CLOSE)
 
-        # Publish to all follower grippers
+        # --- Waist adjustment based on signed x_distance (very smooth constant-speed) ---
+        # --- Waist adjustment based on signed x_distance (constant-speed, smooth stop at limit) ---
+        x_dist = patient_found_state.get('x_distance', 0.0)
+
+        DEADZONE = 50.0
+        SPEED_RAD_S = 0.05        # radians/sec, ~0.86°/s
+        MAX_ABS_ANGLE = 0.5        # ±23°, soft limit
+
+        if 'last_waist_update_time' not in patient_found_state:
+            patient_found_state['last_waist_update_time'] = now
+        dt_waist = max(1e-3, now - patient_found_state['last_waist_update_time'])
+        patient_found_state['last_waist_update_time'] = now
+
         for name, bot in robots.items():
             if 'follower' not in name:
                 continue
+
+            waist_joint_name = bot.arm.group_info.joint_names[0]
+            current_waist = float(bot.arm.core.joint_states.position[0])
+
+            # Latch the current waist position when patient_found first triggers
+            if not patient_found_state.get('pf_latched', False):
+                patient_found_state['pf_latched'] = True
+                patient_found_state['waist_center'] = current_waist
+                patient_found_state['waist_angle_offset'] = 0.0
+                patient_found_state['waist_target'] = current_waist
+
+            # Direction logic (ignore magnitude)
+            if x_dist > DEADZONE:
+                direction = -1.0
+            elif x_dist < -DEADZONE:
+                direction = +1.0
+            else:
+                direction = 0.0
+
+            # Integrate angle offset — but stop accumulating if at limit and still pushing that way
+            offset = patient_found_state.get('waist_angle_offset', 0.0)
+            if not ((offset >= MAX_ABS_ANGLE and direction > 0) or
+                    (offset <= -MAX_ABS_ANGLE and direction < 0)):
+                offset += direction * SPEED_RAD_S * dt_waist
+
+            # store updated offset and target
+            patient_found_state['waist_angle_offset'] = offset
+            target_angle = patient_found_state['waist_center'] + offset
+            patient_found_state['waist_target'] = target_angle
+
+            # Publish command directly, no filtering or rate limiting
+            print(f"Publishing waist command: {target_angle}")
+            print(f"x_dist: {x_dist}")
+            print(f"offset: {offset}")
+
+            waist_cmd = JointSingleCommand()
+            waist_cmd.name = waist_joint_name
+            waist_cmd.cmd = target_angle
+            bot.arm.core.pub_single.publish(waist_cmd)
+
+    
+
+            # Gripper wave as before
             cmd = JointSingleCommand(name='gripper', cmd=target_grip)
             bot.gripper.core.pub_single.publish(cmd)
 
         return
 
-    # ============================================================
+        # ============================================================
     # 2. If we just resumed from pause → fix offsets & apply fade-in
     # ============================================================
     if patient_found_state['last_pause_time'] is not None:
-
-        
         paused_duration = now - patient_found_state['last_pause_time']
         patient_found_state['paused_time_offset'] += paused_duration
         patient_found_state['last_pause_time'] = None
-        
 
-        
+        # 🔹 Realign sine motion start to the current waist angle (avoid jerk)
         for name, bot in robots.items():
             if 'follower' not in name:
                 continue
-            # Only get the first 6 arm joints, not gripper/finger joints
+            current_positions = bot.arm.core.joint_states.position
             joint_names = bot.arm.group_info.joint_names
             n_arm = min(6, len(joint_names))
-            current_positions = bot.arm.core.joint_states.position[:n_arm]
-            patient_found_state['start_offsets'][name] = list(current_positions)
+            # Align start offsets to current pose
+            patient_found_state['start_offsets'][name] = list(current_positions[:n_arm])
 
-        # Mark just resumed for smooth fade-in
+        # Reset sine wave phase and fade-in timer
         patient_found_state['just_resumed'] = True
         patient_found_state['resume_time'] = now
+        patient_found_state['pf_latched'] = False  # allow re-latching next time
 
         
     # ============================================================
@@ -418,7 +498,15 @@ def main(args: dict) -> None:
     node = create_interbotix_global_node('aloha')
     
     # Shared state for patient_found topic
-    patient_found_state = {'patient_found': False, 'paused_time_offset': 0.0, 'last_pause_time': None, 'last_waist_angle': 0.0}
+    # patient_found_state = {'patient_found': False, 'paused_time_offset': 0.0, 'last_pause_time': None, 'last_waist_angle': 0.0}
+    patient_found_state = {
+    'patient_found': False,
+    'paused_time_offset': 0.0,
+    'last_pause_time': None,
+    'last_waist_angle': 0.0,
+    'x_distance': 0.0,               # <-- NEW: stores latest distance reading
+    'waist_angle_offset': 0.0,       # <-- NEW: keeps smoothed waist offset
+    }
     
     # Subscribe to patient_found topic
     def patient_found_callback(msg):
@@ -429,6 +517,16 @@ def main(args: dict) -> None:
         Bool,
         'patient_found',
         patient_found_callback,
+        10
+    )
+
+    def patient_x_distance_callback(msg):
+        patient_found_state['x_distance'] = msg.data
+
+    distance_sub = node.create_subscription(
+        Float64,
+        'patient_x_distance',
+        patient_x_distance_callback,
         10
     )
 
