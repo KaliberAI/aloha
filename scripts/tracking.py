@@ -122,50 +122,6 @@ def demo_multilink_wave_with_patient_found(
 
     # -------------- PAUSE MODE (patient found) --------------
     if s.get('patient_found', False):
-        if not s['is_paused']:
-            # Entering pause: mark paused; phase stops advancing automatically (we don't add dt)
-            s['is_paused'] = True
-            
-            # Gripper movement only happens the first time patient is found
-            for name, follower_bot in robots.items():
-                if 'follower' not in name:
-                    continue
-                move_grippers(
-                    [follower_bot],
-                    [FOLLOWER_GRIPPER_JOINT_CLOSE],
-                    moving_time=0.3,
-                    dt=dt,
-                )
-                move_grippers(
-                    [follower_bot],
-                    [FOLLOWER_GRIPPER_JOINT_OPEN],
-                    moving_time=0.3,
-                    dt=dt,
-                )
-                move_grippers(
-                    [follower_bot],
-                    [FOLLOWER_GRIPPER_JOINT_CLOSE],
-                    moving_time=0.3,
-                    dt=dt,
-                )
-                move_grippers(
-                    [follower_bot],
-                    [FOLLOWER_GRIPPER_JOINT_OPEN],
-                    moving_time=0.3,
-                    dt=dt,
-                )
-                move_grippers(
-                    [follower_bot],
-                    [FOLLOWER_GRIPPER_JOINT_CLOSE],
-                    moving_time=0.3,
-                    dt=dt,
-                )
-                move_grippers(
-                    [follower_bot],
-                    [FOLLOWER_GRIPPER_JOINT_OPEN],
-                    moving_time=0.3,
-                    dt=dt,
-                )
         
 
         # --- Gripper: keep waving while paused (time-based so it looks continuous) ---
@@ -208,6 +164,50 @@ def demo_multilink_wave_with_patient_found(
                 direction = +1.0
             else:
                 direction = 0.0
+                if not s['is_paused']:
+            # Entering pause: mark paused; phase stops advancing automatically (we don't add dt)
+                    s['is_paused'] = True
+            
+            # Gripper movement only happens the first time patient is found
+                    for name, follower_bot in robots.items():
+                        if 'follower' not in name:
+                            continue
+                        move_grippers(
+                            [follower_bot],
+                            [FOLLOWER_GRIPPER_JOINT_CLOSE],
+                            moving_time=0.3,
+                            dt=dt,
+                        )
+                        move_grippers(
+                            [follower_bot],
+                            [FOLLOWER_GRIPPER_JOINT_OPEN],
+                            moving_time=0.3,
+                            dt=dt,
+                        )
+                        move_grippers(
+                            [follower_bot],
+                            [FOLLOWER_GRIPPER_JOINT_CLOSE],
+                            moving_time=0.3,
+                            dt=dt,
+                        )
+                        move_grippers(
+                            [follower_bot],
+                            [FOLLOWER_GRIPPER_JOINT_OPEN],
+                            moving_time=0.3,
+                            dt=dt,
+                        )
+                        move_grippers(
+                            [follower_bot],
+                            [FOLLOWER_GRIPPER_JOINT_CLOSE],
+                            moving_time=0.3,
+                            dt=dt,
+                        )
+                        move_grippers(
+                            [follower_bot],
+                            [FOLLOWER_GRIPPER_JOINT_OPEN],
+                            moving_time=0.3,
+                            dt=dt,
+                        )
 
             offset = s.get('waist_angle_offset', 0.0)
             if not ((offset >= MAX_ABS_ANGLE and direction > 0) or
