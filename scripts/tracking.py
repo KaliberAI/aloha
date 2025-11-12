@@ -29,6 +29,10 @@ from rclpy.constants import S_TO_NS
 from typing import Dict
 import time
 import math
+import sys
+import select
+import termios
+import tty
 from std_msgs.msg import Bool, Float64
 
 
@@ -136,7 +140,7 @@ def demo_multilink_wave_with_patient_found(
         # --- Optional waist tracking while paused (smooth, rate-limited) ---
         x_dist = s.get('x_distance', 0.0)
         DEADZONE = 50.0
-        SPEED_RAD_S = 0.09   # rad/s
+        SPEED_RAD_S = 0.05   # rad/s
         MAX_ABS_ANGLE = 0.7  # rad (~28.6°)
         dt_waist = max(1e-3, now - s.get('last_waist_update_time', now))
         s['last_waist_update_time'] = now
@@ -318,7 +322,7 @@ def opening_ceremony(robots: Dict[str, InterbotixManipulatorXS],
 
         # Move arms to starting position
         # Default: [0.0, -0.96, 1.16, 0.0, -0.3, 0.0] or START_ARM_POSE[:6]
-        start_arm_qpos = [0.0, -0.5, 0.5, 0.0, -0.3, 0.0]
+        start_arm_qpos = [0.0, -0.5, 0.7, 0.0, -0.3, 0.0]
         move_arms(
             bot_list=[follower_bot],
             dt=dt,
@@ -409,6 +413,7 @@ def main(args: dict) -> None:
     motion_state = {
         'start_time': None,
         'initialized': False,
+        'in_sleep_mode': False,
     }
 
     node._logger.info('Starting base rotation demo...')
@@ -418,32 +423,68 @@ def main(args: dict) -> None:
         follower_name: JointSingleCommand(name='gripper') for follower_name in robots if 'follower' in follower_name
     }
 
+    # Set up non-blocking keyboard input
+    old_settings = termios.tcgetattr(sys.stdin)
+    tty.setcbreak(sys.stdin.fileno())
 
+    def check_for_enter():
+        """Check if Enter key was pressed (non-blocking)."""
+        if select.select([sys.stdin], [], [], 0)[0]:
+            char = sys.stdin.read(1)
+            if char == '\n' or char == '\r':
+                return True
+        return False
 
     # Main loop
     counter = 0
-    while rclpy.ok():
-        # Process callbacks to update patient_found_state
-        rclpy.spin_once(node, timeout_sec=0.1)
+    try:
+        while rclpy.ok():
+            # Process callbacks to update patient_found_state
+            rclpy.spin_once(node, timeout_sec=0.1)
 
-        
-        if not motion_state['initialized']:
-            motion_state['start_time'] = time.time()
-            motion_state['initialized'] = True
+            # Check for user input (Enter key)
+            if check_for_enter():
+                node._logger.info('Enter key pressed - moving to sleep position...')
+                follower_bots = [bot for name, bot in robots.items() if 'follower' in name]
+                if follower_bots:
+                    sleep_pose = [0.0, -1.76, 1.55, 0.0, 0.8, 0.0]
+                    move_arms(
+                        bot_list=follower_bots,
+                        dt=dt,
+                        target_pose_list=[sleep_pose],
+                        moving_time=5.0,
+                    )
+
+                    node._logger.info('Sleep position reached')
+                    motion_state['in_sleep_mode'] = True
+            
+            # Skip wave motion if in sleep mode
+            if motion_state['in_sleep_mode']:
+                # Sleep for the DT duration
+                DT_DURATION = Duration(seconds=0, nanoseconds=dt * S_TO_NS)
+                get_interbotix_global_node().get_clock().sleep_for(DT_DURATION)
+                continue
+            
+            if not motion_state['initialized']:
+                motion_state['start_time'] = time.time()
+                motion_state['initialized'] = True
 
 
-        elapsed_t = time.time() - motion_state['start_time']
+            elapsed_t = time.time() - motion_state['start_time']
 
-       
-        demo_multilink_wave_with_patient_found(
-            robots, dt, patient_found_state,
-            period=16.0, amplitude=0.8, continuous=False, t=elapsed_t
-            )
-        
+           
+            demo_multilink_wave_with_patient_found(
+                robots, dt, patient_found_state,
+                period=16.0, amplitude=0.8, continuous=False, t=elapsed_t
+                )
+            
 
-        # Sleep for the DT duration
-        DT_DURATION = Duration(seconds=0, nanoseconds=dt * S_TO_NS)
-        get_interbotix_global_node().get_clock().sleep_for(DT_DURATION)
+            # Sleep for the DT duration
+            DT_DURATION = Duration(seconds=0, nanoseconds=dt * S_TO_NS)
+            get_interbotix_global_node().get_clock().sleep_for(DT_DURATION)
+    finally:
+        # Restore terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
     robot_shutdown(node)
 
