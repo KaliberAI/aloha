@@ -1,7 +1,27 @@
 #!/usr/bin/env python3
 
 import argparse
-from aloha.real_env import get_action, make_real_env
+import os
+import time
+import signal
+from functools import partial
+
+
+from aloha.constants import (
+    DT,
+    FOLLOWER_GRIPPER_JOINT_CLOSE,
+    FOLLOWER_GRIPPER_JOINT_OPEN,
+    FPS,
+    IS_MOBILE,
+    LEADER_GRIPPER_CLOSE_THRESH,
+    LEADER_GRIPPER_JOINT_MID,
+    START_ARM_POSE,
+    TASK_CONFIGS,
+)
+from aloha.real_env import (
+    get_action,
+    make_real_env
+)
 from aloha.robot_utils import (
     disable_gravity_compensation,
     enable_gravity_compensation,
@@ -163,8 +183,11 @@ def capture_one_episode(
     IS_MOBILE = config.get("base", False)
     DT = 1 / config.get("fps", 50)
 
-    # Initialize the ROS node and robot environment
-    node = create_interbotix_global_node("aloha")
+    signal.signal(
+        signal.SIGINT,
+        partial(signal_handler, leader_bot_left=leader_bot_left, leader_bot_right=leader_bot_right)
+    )
+
     env = make_real_env(
         node=node,
         setup_robots=False,
@@ -174,7 +197,10 @@ def capture_one_episode(
     )
     robot_startup(node)
 
-    # Set up the dataset file path and handle overwrites
+    disable_gravity_compensation(leader_bot_left)
+    disable_gravity_compensation(leader_bot_right)
+
+    # saving dataset
     if not os.path.isdir(dataset_dir):
         os.makedirs(dataset_dir)
     dataset_path = os.path.join(dataset_dir, dataset_name)
@@ -339,10 +365,20 @@ def capture_one_episode(
     return True
 
 
-def check_episode_index(dataset_dir: str, episode_idx: int, data_suffix: str = "hdf5") -> bool:
-    """
-    Checks if a file with the specified episode index exists, and prompts the user for overwrite 
-    permission if the file is present.
+def signal_handler(sig, frame, leader_bot_left, leader_bot_right):
+    print('You pressed Ctrl+C!')
+    disable_gravity_compensation(leader_bot_left)
+    disable_gravity_compensation(leader_bot_right)
+    exit(1)
+
+
+def main(args: dict):
+    task_config = TASK_CONFIGS[args['task_name']]
+    dataset_dir = task_config['dataset_dir']
+    max_timesteps = task_config['episode_len']
+    camera_names = task_config['camera_names']
+    torque_base = args.get('enable_base_torque', False)
+    gravity_compensation = args.get('gravity_compensation', False)
 
     :param dataset_dir: Directory where episodes are stored.
     :param episode_idx: The episode index provided by the user.
