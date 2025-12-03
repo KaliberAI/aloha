@@ -443,7 +443,7 @@ def main(args: dict) -> None:
                 node._logger.info('Enter key pressed - moving to sleep position...')
                 follower_bots = [bot for name, bot in robots.items() if 'follower' in name]
                 if follower_bots:
-                    sleep_pose = [0.0, -1.76, 1.55, 0.0, 0.8, 0.0]
+                    sleep_pose = [0.0, -1.85, 1.6057, 0.0, 0.8203, 0.0]
                     move_arms(
                         bot_list=follower_bots,
                         dt=dt,
