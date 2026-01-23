@@ -318,7 +318,8 @@ def opening_ceremony(robots: Dict[str, InterbotixManipulatorXS],
 
         # Move arms to starting position
         # Default: [0.0, -0.96, 1.16, 0.0, -0.3, 0.0] or START_ARM_POSE[:6]
-        start_arm_qpos = [0.0, -1.05, 0.42, 0, 1.05, 0.0]
+        # start_arm_qpos = [0.0, -1.05, 0.42, 0, 1.05, 0.0]
+        start_arm_qpos = START_ARM_POSE[:6]
         move_arms(
             bot_list=[follower_bot],
             dt=dt,

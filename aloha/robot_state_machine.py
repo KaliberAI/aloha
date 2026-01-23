@@ -25,12 +25,15 @@ class RobotMotionState(Enum):
     RESUMING = "resuming"
     NOD = "nod"
     SLEEP = "sleep"
+    KNEE = "knee"
 
 
 # Key mappings for debug mode
 STATE_KEY_MAP = {
     'w': RobotMotionState.WAVING,
     'W': RobotMotionState.WAVING,
+    'k': RobotMotionState.KNEE,
+    'K': RobotMotionState.KNEE,
     's': RobotMotionState.SLEEP,
     'S': RobotMotionState.SLEEP,
     't': RobotMotionState.TRACK,
@@ -153,6 +156,51 @@ class OpeningState(BaseMotionState):
         
         return result
 
+class KneeState(BaseMotionState):
+    """Opening ceremony state - moves to starting pose."""
+    
+    def __init__(self, state_machine: 'RobotStateMachine'):
+        super().__init__(state_machine)
+        self.target_pose = [0.0, -1.05, 0.8, 0.0, 1.05, 0.0]
+        self.moving_time = 4.0
+        self.start_time = None
+        self.start_poses = {}
+    
+    def on_enter(self, current_time: float):
+        """Capture starting poses when entering."""
+        self.start_time = current_time
+        self.start_poses = {}
+    
+    def generate_joint_commands(
+        self,
+        robot_name: str,
+        current_joints: List[float],
+    ) -> List[float]:
+        """Interpolate from current pose to target pose."""
+        if self.start_time is None:
+            return current_joints
+        
+        # Capture initial pose
+        if robot_name not in self.start_poses:
+            self.start_poses[robot_name] = list(current_joints[:6])
+        
+        # Calculate interpolation factor
+        elapsed = time.time() - self.start_time
+        t = min(1.0, elapsed / self.moving_time)
+        
+        # Smooth interpolation (ease-in-out)
+        t_smooth = 0.5 - 0.5 * math.cos(math.pi * t)
+        
+        # Interpolate
+        start = self.start_poses[robot_name]
+        target = self.target_pose
+        result = [
+            s + t_smooth * (tgt - s)
+            for s, tgt in zip(start[:6], target)
+        ]
+        
+        return result
+
 
 class WavingState(BaseMotionState):
     """Waving state - sinusoidal wave motion relative to current pose."""
@@ -166,7 +214,7 @@ class WavingState(BaseMotionState):
         self.last_update_time = None
         self.base_poses = {}  # Base pose for each robot (captured on entry)
         self.blend_start_time = {}  # Start time for blend-in per robot
-        self.blend_duration = 0.5  # Blend-in duration in seconds
+        self.blend_duration = 1  # Blend-in duration in seconds
         self.entry_poses = {}  # Pose when entering state (for smooth transition)
         self.initialized = False
     
@@ -494,6 +542,7 @@ class RobotStateMachine:
             RobotMotionState.RESUMING: ResumingState(self),
             RobotMotionState.NOD: NodState(self),
             RobotMotionState.SLEEP: SleepState(self),
+            RobotMotionState.KNEE: KneeState(self),
         }
         
         # Per-robot smoothing state

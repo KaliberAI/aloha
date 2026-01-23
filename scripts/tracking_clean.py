@@ -18,7 +18,7 @@ from typing import Dict
 import rclpy
 from rclpy.duration import Duration
 from rclpy.constants import S_TO_NS
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Float64, Int32
 
 from aloha.robot_utils import (
     torque_on,
@@ -50,12 +50,24 @@ class RobotTrackingController:
     delegates motion generation to individual states.
     """
     
+    # State ID to RobotMotionState mapping for ROS control mode
+    STATE_ID_MAP = {
+        0: RobotMotionState.SLEEP,
+        1: RobotMotionState.OPENING,
+        2: RobotMotionState.WAVING,
+        3: RobotMotionState.NOD,
+        4: RobotMotionState.RESUMING,
+        5: RobotMotionState.TRACK,
+        6: RobotMotionState.KNEE,
+    }
+    
     def __init__(
         self,
         node,
         robots: Dict[str, InterbotixManipulatorXS],
         dt: float,
         debug_mode: bool = False,
+        ros_control_mode: bool = False,
     ):
         """
         Initialize tracking controller.
@@ -64,11 +76,13 @@ class RobotTrackingController:
         :param robots: Dictionary of robot instances
         :param dt: Time step
         :param debug_mode: Enable debug mode with key control
+        :param ros_control_mode: Enable ROS control mode with /robot_state topic
         """
         self.node = node
         self.robots = robots
         self.dt = dt
         self.debug_mode = debug_mode
+        self.ros_control_mode = ros_control_mode
         
         # State machine
         self.state_machine = RobotStateMachine()
@@ -76,9 +90,13 @@ class RobotTrackingController:
         # Patient detection state
         self.patient_found = False
         
-        # Terminal settings for key input
+        # ROS control state
+        self.ros_state_id = None  # Current state ID from ROS topic
+        
+        # Terminal settings for key input (only needed for debug mode)
         self.old_terminal_settings = None
-        self.setup_terminal()
+        if self.debug_mode:
+            self.setup_terminal()
         
         # Setup ROS subscribers
         self.setup_subscribers()
@@ -86,9 +104,22 @@ class RobotTrackingController:
         # Print debug info
         if self.debug_mode:
             self.print_debug_help()
+        elif self.ros_control_mode:
+            self.node._logger.info('=' * 60)
+            self.node._logger.info('[ROS_CONTROL] ROS control mode enabled!')
+            self.node._logger.info('[ROS_CONTROL] Subscribing to /robot_state topic')
+            self.node._logger.info('[ROS_CONTROL] State mapping:')
+            self.node._logger.info('[ROS_CONTROL]   0 - SLEEP')
+            self.node._logger.info('[ROS_CONTROL]   1 - OPENING')
+            self.node._logger.info('[ROS_CONTROL]   2 - WAVING')
+            self.node._logger.info('[ROS_CONTROL]   3 - NOD')
+            self.node._logger.info('[ROS_CONTROL]   4 - RESUMING')
+            self.node._logger.info('[ROS_CONTROL]   5 - TRACK')
+            self.node._logger.info('[ROS_CONTROL]   6 - KNEE')
+            self.node._logger.info('=' * 60)
     
     def setup_subscribers(self):
-        """Setup ROS subscribers for patient detection."""
+        """Setup ROS subscribers for patient detection and ROS control."""
         self.patient_found_sub = self.node.create_subscription(
             Bool, 'patient_found', self.patient_found_callback, 10
         )
@@ -96,6 +127,12 @@ class RobotTrackingController:
         self.distance_sub = self.node.create_subscription(
             Float64, 'patient_x_distance', self.patient_x_distance_callback, 10
         )
+        
+        # ROS control subscriber
+        if self.ros_control_mode:
+            self.robot_state_sub = self.node.create_subscription(
+                Int32, 'robot_state', self.robot_state_callback, 10
+            )
     
     def patient_found_callback(self, msg):
         """Handle patient_found topic."""
@@ -104,6 +141,19 @@ class RobotTrackingController:
     def patient_x_distance_callback(self, msg):
         """Handle patient_x_distance topic."""
         self.state_machine.set_x_distance(msg.data)
+    
+    def robot_state_callback(self, msg):
+        """Handle robot_state topic for ROS control mode."""
+        state_id = msg.data
+        if state_id in self.STATE_ID_MAP:
+            self.ros_state_id = state_id
+            self.node._logger.info(
+                f'[ROS_CONTROL] Received state ID: {state_id} -> {self.STATE_ID_MAP[state_id].value}'
+            )
+        else:
+            self.node._logger.warn(
+                f'[ROS_CONTROL] Invalid state ID: {state_id}. Valid range: 0-6'
+            )
     
     def setup_terminal(self):
         """Setup terminal for key input."""
@@ -269,15 +319,23 @@ class RobotTrackingController:
             while rclpy.ok():
                 current_time = time.time()
                 
-                # Handle debug keys (if enabled)
-                if self.debug_mode:
+                # Process ROS callbacks first
+                rclpy.spin_once(self.node, timeout_sec=0.0)
+                
+                # Handle state transitions based on mode
+                if self.ros_control_mode:
+                    # ROS control mode: transition based on /robot_state topic
+                    if self.ros_state_id is not None:
+                        target_state = self.STATE_ID_MAP[self.ros_state_id]
+                        current_state = self.state_machine.get_state()
+                        if target_state != current_state:
+                            self.state_machine.transition_to(target_state, current_time)
+                elif self.debug_mode:
+                    # Debug mode: handle key presses
                     self.handle_debug_keys(current_time)
                 else:
                     # Normal mode: automatic state transitions
                     self.update_state_transitions(current_time)
-                
-                # Process ROS callbacks
-                rclpy.spin_once(self.node, timeout_sec=0.0)
                 
                 # Execute motion
                 self.execute_motion(current_time)
@@ -287,7 +345,8 @@ class RobotTrackingController:
                 get_interbotix_global_node().get_clock().sleep_for(DT_DURATION)
         
         finally:
-            self.restore_terminal()
+            if self.debug_mode:
+                self.restore_terminal()
 
 
 def opening_ceremony(
@@ -373,6 +432,7 @@ def main(args: dict) -> None:
         robots=robots,
         dt=dt,
         debug_mode=args.get('debug', False),
+        ros_control_mode=args.get('ros_control', False),
     )
     
     controller.run()
@@ -394,6 +454,11 @@ if __name__ == '__main__':
         '-d', '--debug',
         action='store_true',
         help='Enable debug mode: use key presses to control state transitions'
+    )
+    parser.add_argument(
+        '--ros_control',
+        action='store_true',
+        help='Enable ROS control mode: subscribe to /robot_state topic for state transitions'
     )
     
     main(vars(parser.parse_args()))
