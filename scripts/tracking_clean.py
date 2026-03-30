@@ -26,6 +26,7 @@ from aloha.robot_utils import (
     move_arms,
     move_grippers,
     FOLLOWER_GRIPPER_JOINT_OPEN,
+    START_ARM_POSE,
 )
 from aloha.robot_state_machine import (
     RobotStateMachine,
@@ -56,9 +57,7 @@ class RobotTrackingController:
         1: RobotMotionState.OPENING,
         2: RobotMotionState.WAVING,
         3: RobotMotionState.NOD,
-        4: RobotMotionState.RESUMING,
-        5: RobotMotionState.TRACK,
-        6: RobotMotionState.KNEE,
+        4: RobotMotionState.TRACK,
     }
     
     def __init__(
@@ -113,9 +112,7 @@ class RobotTrackingController:
             self.node._logger.info('[ROS_CONTROL]   1 - OPENING')
             self.node._logger.info('[ROS_CONTROL]   2 - WAVING')
             self.node._logger.info('[ROS_CONTROL]   3 - NOD')
-            self.node._logger.info('[ROS_CONTROL]   4 - RESUMING')
-            self.node._logger.info('[ROS_CONTROL]   5 - TRACK')
-            self.node._logger.info('[ROS_CONTROL]   6 - KNEE')
+            self.node._logger.info('[ROS_CONTROL]   4 - TRACK')
             self.node._logger.info('=' * 60)
     
     def setup_subscribers(self):
@@ -152,7 +149,7 @@ class RobotTrackingController:
             )
         else:
             self.node._logger.warn(
-                f'[ROS_CONTROL] Invalid state ID: {state_id}. Valid range: 0-6'
+                f'[ROS_CONTROL] Invalid state ID: {state_id}. Valid range: 0-4'
             )
     
     def setup_terminal(self):
@@ -254,15 +251,9 @@ class RobotTrackingController:
             if self.patient_found:
                 self.state_machine.transition_to(RobotMotionState.TRACK, current_time)
         
-        # TRACK -> RESUMING (patient lost)
+        # TRACK -> WAVING (patient lost)
         elif current_state == RobotMotionState.TRACK:
             if not self.patient_found:
-                self.state_machine.transition_to(RobotMotionState.RESUMING, current_time)
-        
-        # RESUMING -> WAVING (blend complete)
-        elif current_state == RobotMotionState.RESUMING:
-            resuming_state = self.state_machine.states[RobotMotionState.RESUMING]
-            if resuming_state.get_blend_factor(current_time) >= 0.99:
                 self.state_machine.transition_to(RobotMotionState.WAVING, current_time)
         
         # OPENING -> WAVING (movement complete)
@@ -375,7 +366,7 @@ def opening_ceremony(
         torque_on(follower_bot)
 
         # Move arms to starting position
-        start_arm_qpos = [0.0, -1.05, 0.42, 0, 1.05, 0.0]
+        start_arm_qpos = START_ARM_POSE[:6]
         move_arms(
             bot_list=[follower_bot],
             dt=dt,

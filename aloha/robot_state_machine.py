@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Dict, Callable, Optional, List, TYPE_CHECKING
 import time
 import math
-
+from aloha.robot_utils import START_ARM_POSE
 if TYPE_CHECKING:
     from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
@@ -22,24 +22,18 @@ class RobotMotionState(Enum):
     WAVING = "waving"
     PAUSED = "paused"
     TRACK = "track"
-    RESUMING = "resuming"
     NOD = "nod"
     SLEEP = "sleep"
-    KNEE = "knee"
 
 
 # Key mappings for debug mode
 STATE_KEY_MAP = {
     'w': RobotMotionState.WAVING,
     'W': RobotMotionState.WAVING,
-    'k': RobotMotionState.KNEE,
-    'K': RobotMotionState.KNEE,
     's': RobotMotionState.SLEEP,
     'S': RobotMotionState.SLEEP,
     't': RobotMotionState.TRACK,
     'T': RobotMotionState.TRACK,
-    'r': RobotMotionState.RESUMING,
-    'R': RobotMotionState.RESUMING,
     'n': RobotMotionState.NOD,
     'N': RobotMotionState.NOD,
     'o': RobotMotionState.OPENING,
@@ -116,52 +110,8 @@ class OpeningState(BaseMotionState):
     
     def __init__(self, state_machine: 'RobotStateMachine'):
         super().__init__(state_machine)
-        self.target_pose = [0.0, -1.05, 0.42, 0.0, 1.05, 0.0]
-        self.moving_time = 4.0
-        self.start_time = None
-        self.start_poses = {}
-    
-    def on_enter(self, current_time: float):
-        """Capture starting poses when entering."""
-        self.start_time = current_time
-        self.start_poses = {}
-    
-    def generate_joint_commands(
-        self,
-        robot_name: str,
-        current_joints: List[float],
-    ) -> List[float]:
-        """Interpolate from current pose to target pose."""
-        if self.start_time is None:
-            return current_joints
-        
-        # Capture initial pose
-        if robot_name not in self.start_poses:
-            self.start_poses[robot_name] = list(current_joints[:6])
-        
-        # Calculate interpolation factor
-        elapsed = time.time() - self.start_time
-        t = min(1.0, elapsed / self.moving_time)
-        
-        # Smooth interpolation (ease-in-out)
-        t_smooth = 0.5 - 0.5 * math.cos(math.pi * t)
-        
-        # Interpolate
-        start = self.start_poses[robot_name]
-        target = self.target_pose
-        result = [
-            s + t_smooth * (tgt - s)
-            for s, tgt in zip(start[:6], target)
-        ]
-        
-        return result
-
-class KneeState(BaseMotionState):
-    """Opening ceremony state - moves to starting pose."""
-    
-    def __init__(self, state_machine: 'RobotStateMachine'):
-        super().__init__(state_machine)
-        self.target_pose = [0.0, -1.05, 0.8, 0.0, 1.05, 0.0]
+        # self.target_pose = [0.0, -1.05, 0.42, 0.0, 1.05, 0.0]
+        self.target_pose = START_ARM_POSE[:6]
         self.moving_time = 4.0
         self.start_time = None
         self.start_poses = {}
@@ -381,57 +331,6 @@ class TrackState(BaseMotionState):
             phase01 * (FOLLOWER_GRIPPER_JOINT_OPEN - FOLLOWER_GRIPPER_JOINT_CLOSE)
 
 
-class ResumingState(BaseMotionState):
-    """Resuming state - smooth blend from current pose to target wave."""
-    
-    def __init__(self, state_machine: 'RobotStateMachine'):
-        super().__init__(state_machine)
-        self.blend_duration = 1.5
-        self.start_time = None
-        self.start_poses = {}
-    
-    def on_enter(self, current_time: float):
-        """Capture start poses for blending."""
-        self.start_time = current_time
-        self.start_poses = {}
-    
-    def get_blend_factor(self, current_time: float) -> float:
-        """Calculate smooth blend factor (0 to 1)."""
-        if self.start_time is None:
-            return 1.0
-        
-        elapsed = current_time - self.start_time
-        u = elapsed / max(1e-6, self.blend_duration)
-        u = max(0.0, min(1.0, u))
-        
-        # Raised cosine for C1-continuous blending
-        return 0.5 - 0.5 * math.cos(math.pi * u)
-    
-    def generate_joint_commands(
-        self,
-        robot_name: str,
-        current_joints: List[float],
-    ) -> List[float]:
-        """Blend from start pose to target wave pose."""
-        # Capture start pose on first call
-        if robot_name not in self.start_poses:
-            self.start_poses[robot_name] = list(current_joints[:6])
-        
-        # Get target pose from waving state
-        waving_state = self.sm.states[RobotMotionState.WAVING]
-        target_wave = waving_state.generate_joint_commands(robot_name, current_joints)
-        
-        # Blend
-        blend = self.get_blend_factor(time.time())
-        start = self.start_poses[robot_name]
-        result = [
-            (1.0 - blend) * s + blend * t
-            for s, t in zip(start[:6], target_wave[:6])
-        ]
-        
-        return result
-
-
 class NodState(BaseMotionState):
     """Nod state - slow elbow up/down motion."""
     
@@ -539,10 +438,8 @@ class RobotStateMachine:
             RobotMotionState.OPENING: OpeningState(self),
             RobotMotionState.WAVING: WavingState(self),
             RobotMotionState.TRACK: TrackState(self),
-            RobotMotionState.RESUMING: ResumingState(self),
             RobotMotionState.NOD: NodState(self),
             RobotMotionState.SLEEP: SleepState(self),
-            RobotMotionState.KNEE: KneeState(self),
         }
         
         # Per-robot smoothing state
