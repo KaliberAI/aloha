@@ -1,4 +1,4 @@
-port: /dev/ttyDXL_follower_right
+port: /dev/ttyUSB0
 
 groups:
   arm:

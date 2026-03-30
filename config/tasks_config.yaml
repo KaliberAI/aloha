@@ -1,0 +1,36 @@
+# ==============================================================================
+# Task Configuration File (task_config.yaml)
+# ==============================================================================
+# This file contains configuration settings for various tasks on the Aloha robot
+# systems. Each task has specific parameters, such as dataset directory and 
+# episode length, tailored for different Aloha robot setups (e.g., mobile, 
+# stationary, solo).
+# ==============================================================================
+
+tasks:
+  # ----------------------------------------------------------------------------
+  # Task: Aloha Mobile Dummy
+  # ----------------------------------------------------------------------------
+  aloha_mobile_dummy:
+    # Path to the dataset storage directory
+    dataset_dir: "~/aloha_data/aloha_mobile_dummy"  
+    # Length of each episode in timesteps
+    episode_len: 300                               
+
+  # ----------------------------------------------------------------------------
+  # Task: Aloha Stationary Dummy
+  # ----------------------------------------------------------------------------
+  aloha_stationary_dummy:
+    # Path to the dataset storage directory
+    dataset_dir: "~/aloha_data/aloha_stationary_dummy"  
+    # Length of each episode in timesteps
+    episode_len: 500                                   
+
+  # ----------------------------------------------------------------------------
+  # Task: Aloha Solo Dummy
+  # ----------------------------------------------------------------------------
+  aloha_solo_dummy:
+    # Path to the dataset storage directory
+    dataset_dir: "~/aloha_data/aloha_solo_dummy"  
+    # Length of each episode in timesteps
+    episode_len: 500                              

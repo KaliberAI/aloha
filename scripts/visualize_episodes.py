@@ -1,22 +1,22 @@
 import argparse
 import os
 
-from aloha.constants import (
-    DT,
-    IS_MOBILE,
+from aloha.robot_utils import (
     JOINT_NAMES,
+    load_yaml_file
 )
 import cv2
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
-
+from pathlib import Path
+import yaml
 
 STATE_NAMES = JOINT_NAMES + ['gripper']
 BASE_STATE_NAMES = ['linear_vel', 'angular_vel']
 
 
-def load_hdf5(dataset_dir, dataset_name):
+def load_hdf5(dataset_dir, dataset_name, is_mobile):
     dataset_path = os.path.join(dataset_dir, dataset_name + '.hdf5')
     if not os.path.isfile(dataset_path):
         print(f'Dataset does not exist at \n{dataset_path}\n')
@@ -31,7 +31,7 @@ def load_hdf5(dataset_dir, dataset_name):
         else:
             effort = None
         action = root['/action'][()]
-        if IS_MOBILE:
+        if is_mobile:
             base_action = root['/base_action'][()]
         else:
             base_action = None
@@ -61,28 +61,41 @@ def load_hdf5(dataset_dir, dataset_name):
 def main(args):
     dataset_dir = args['dataset_dir']
     episode_idx = args['episode_idx']
+    robot_base = args['robot']
+
+    base_path = Path(__file__).resolve().parent.parent / "config"
+
+    config = load_yaml_file('robot', robot_base, base_path).get('robot', {})
+
+    is_mobile = config.get('base', False)
+
+    dt = 1/config.get('fps', 50)
+
     ismirror = args['ismirror']
     if ismirror:
         dataset_name = f'mirror_episode_{episode_idx}'
     else:
         dataset_name = f'episode_{episode_idx}'
 
-    qpos, _, _, action, base_action, image_dict = load_hdf5(dataset_dir, dataset_name)
+    qpos, _, _, action, base_action, image_dict = load_hdf5(
+        dataset_dir, dataset_name, is_mobile)
     print('hdf5 loaded!')
     save_videos(
         image_dict,
-        DT,
-        video_path=os.path.join(dataset_dir, dataset_name + '_video.mp4')
+        dt,
+        video_path=os.path.join(dataset_dir, dataset_name + '_video.mp4'),
     )
     visualize_joints(
         qpos,
         action,
-        plot_path=os.path.join(dataset_dir, dataset_name + '_qpos.png')
+        plot_path=os.path.join(dataset_dir, dataset_name + '_qpos.png'),
+        config=config,
     )
-    if IS_MOBILE:
+    if is_mobile:
         visualize_base(
             base_action,
-            plot_path=os.path.join(dataset_dir, dataset_name + '_base_action.png')
+            plot_path=os.path.join(
+                dataset_dir, dataset_name + '_base_action.png'),
         )
 
 
@@ -92,7 +105,8 @@ def save_videos(video, dt, video_path=None):
         h, w, _ = video[0][cam_names[0]].shape
         w = w * len(cam_names)
         fps = int(1/dt)
-        out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        out = cv2.VideoWriter(
+            video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
         for ts, image_dict in enumerate(video):
             images = []
             for cam_name in cam_names:
@@ -108,11 +122,13 @@ def save_videos(video, dt, video_path=None):
         all_cam_videos = []
         for cam_name in cam_names:
             all_cam_videos.append(video[cam_name])
-        all_cam_videos = np.concatenate(all_cam_videos, axis=2)  # width dimension
+        all_cam_videos = np.concatenate(
+            all_cam_videos, axis=2)  # width dimension
 
         n_frames, h, w, _ = all_cam_videos.shape
         fps = int(1 / dt)
-        out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        out = cv2.VideoWriter(
+            video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
         for t in range(n_frames):
             image = all_cam_videos[t]
             image = image[:, :, [2, 1, 0]]  # swap B and R channel
@@ -121,7 +137,14 @@ def save_videos(video, dt, video_path=None):
         print(f'Saved video to: {video_path}')
 
 
-def visualize_joints(qpos_list, command_list, plot_path=None, ylim=None, label_overwrite=None):
+def visualize_joints(qpos_list,
+                     command_list,
+                     plot_path=None,
+                     ylim=None,
+                     label_overwrite=None,
+                     config: dict = {},
+                     ):
+
     if label_overwrite:
         label1, label2 = label_overwrite
     else:
@@ -134,10 +157,23 @@ def visualize_joints(qpos_list, command_list, plot_path=None, ylim=None, label_o
     num_figs = num_dim
     fig, axs = plt.subplots(num_figs, 1, figsize=(8, 2 * num_dim))
 
-    # plot joint state
-    all_names = (
-        [f'{name}_left' for name in STATE_NAMES] + [f'{name}_right' for name in STATE_NAMES]
-    )
+    leader_robots = {arm['name']: arm for arm in config.get('leader_arms', [])}
+    follower_robots = {arm['name']: arm for arm in config.get('follower_arms', [])}
+
+    # Initialize an empty list to store matched suffixes
+    valid_suffixes = []
+
+    # Identify valid suffixes from paired robots
+    for leader_name in leader_robots.keys():
+        # Extract suffix after first underscore
+        suffix = leader_name.split('_', 1)[1]
+        if f"follower_{suffix}" in follower_robots:
+            valid_suffixes.append(suffix)
+
+    # Create all_names based on valid suffixes
+    all_names = [
+        f"{name}_{suffix}" for suffix in valid_suffixes for name in STATE_NAMES]
+
     for dim_idx in range(num_dim):
         ax = axs[dim_idx]
         ax.plot(qpos[:, dim_idx], label=label1)
@@ -161,17 +197,31 @@ def visualize_joints(qpos_list, command_list, plot_path=None, ylim=None, label_o
     plt.close()
 
 
-def visualize_single(efforts_list, label, plot_path=None, ylim=None, label_overwrite=None):
+def visualize_single(efforts_list, label, plot_path=None, ylim=None, label_overwrite=None, config: dict = {}):
     efforts = np.array(efforts_list)  # ts, dim
     num_ts, num_dim = efforts.shape
     h, w = 2, num_dim
     num_figs = num_dim
     fig, axs = plt.subplots(num_figs, 1, figsize=(w, h * num_figs))
 
-    # plot joint state
-    all_names = (
-        [name + '_left' for name in STATE_NAMES] + [name + '_right' for name in STATE_NAMES]
-    )
+    leader_robots = {arm['name']: arm for arm in config.get('leader_arms', [])}
+    follower_robots = {arm['name']
+        : arm for arm in config.get('follower_arms', [])}
+
+    # Initialize an empty list to store matched suffixes
+    valid_suffixes = []
+
+    # Identify valid suffixes from paired robots
+    for leader_name in leader_robots.keys():
+        # Extract suffix after first underscore
+        suffix = leader_name.split('_', 1)[1]
+        if f"follower_{suffix}" in follower_robots:
+            valid_suffixes.append(suffix)
+
+    # Create all_names based on valid suffixes
+    all_names = [
+        f"{name}_{suffix}" for suffix in valid_suffixes for name in STATE_NAMES]
+
     for dim_idx in range(num_dim):
         ax = axs[dim_idx]
         ax.plot(efforts[:, dim_idx], label=label)
@@ -262,5 +312,12 @@ if __name__ == '__main__':
         help='Episode index.',
         required=False,
     )
+
+    parser.add_argument(
+        '-r', '--robot',
+        required=True,
+        help='Specify the robot configuration to use: aloha_solo, aloha_stationary, or aloha_mobile.'
+    )
+
     parser.add_argument('--ismirror', action='store_true')
     main(vars(parser.parse_args()))

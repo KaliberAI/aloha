@@ -21,3 +21,11 @@ To train imitation learning algorithms, you would also need to install:
 - [``config``](./config/): a config for each robot, designating the port they should bind to, more details in quick start guide.
 - [``launch``](./launch): a ROS 2 launch file for all cameras and manipulators.
 - [``scripts``](./scripts/): Python scripts for teleop and data collection
+
+# Launch patient tracking demo
+```
+# Change directory to Agents
+# The script launches xsarm driver, gstreamer driver, 
+# nurse agent visualization, conversation module, and tracking demo scripot
+python System_Initialization/robot/viper/setup_environment.py
+```

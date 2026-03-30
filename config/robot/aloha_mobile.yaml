@@ -1,0 +1,114 @@
+robot:
+  # Unique identifier for the robot (e.g., aloha_solo, aloha_stationary, aloha_mobile)
+  name: aloha_mobile                
+
+  # Frames per second for control and data updates (default: 50)
+  fps: 50                         
+
+  # Leader Arm Configuration (Human-controlled arms)
+  leader_arms:
+    - # Identifier for the right leader arm (naming convention: leader_<unique_identification>)
+      name: leader_right               
+
+      # Model type for compatibility and calibration
+      model: aloha_wx250s              
+
+      # Orientation side (options: left, right)
+      orientation: right               
+
+      # Transformation matrix for spatial alignment (required for RVIZ)
+      transform: [-0.5, -0.25, 0.0, 0.0, 0.0, 0.0, 1.0]  
+
+    - # Identifier for the left leader arm
+      name: leader_left                
+
+      # Model type for compatibility and calibration
+      model: aloha_wx250s              
+
+      # Orientation side
+      orientation: left                
+
+      # Transformation matrix for RVIZ alignment
+      transform: [-0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 1.0]  
+
+  # Follower Arm Configuration (Robot-controlled arms)
+  follower_arms:
+    - # Identifier for the right follower arm (naming convention: follower_<unique_identification>)
+      name: follower_right             
+
+      # Model type for compatibility and calibration
+      model: aloha_vx300s              
+
+      # Orientation side
+      orientation: right               
+
+      # Transformation matrix for spatial alignment
+      transform: [0.5, -0.25, 0.0, 0.0, 0.0, 0.0, 1.0]  
+
+    - # Identifier for the left follower arm
+      name: follower_left              
+
+      # Model type for compatibility and calibration
+      model: aloha_vx300s              
+
+      # Orientation side
+      orientation: left                
+
+      # Transformation matrix for spatial alignment
+      transform: [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 1.0]  
+
+  # Camera Configuration
+  cameras:
+    # Enables color mode for all cameras (default: true)
+    common_parameters:
+      enable_color: true                     
+
+      # RGB camera resolution and FPS settings
+      rgb_camera:
+        # Profile specifying resolution and FPS (e.g., '640,480,60')
+        profile: '640,480,60'                
+
+        # Disables auto exposure for uniform lighting (default: false)
+        enable_auto_exposure: false          
+
+      # Depth module resolution and FPS settings
+      depth_module:
+        # Profile specifying resolution and FPS (e.g., '640,480,60')
+        profile: '640,480,60'                
+
+        # Disables auto exposure for depth consistency (default: false)
+        enable_auto_exposure: false          
+
+      # Disables depth sensing for all cameras (default: false)
+      enable_depth: false                    
+
+      # Infrared camera settings (default: false for all)
+      enable_infra: false                    
+      enable_infra1: false                   
+      enable_infra2: false                 
+
+      # Topic format for color images (use format specified by realsense, e.g., '{}/camera/color/image_rect_raw')
+      color_image_topic_name: '{}/camera/color/image_rect_raw'  
+
+    # Specific camera instances
+    camera_instances:
+      - # Identifier for overhead camera
+        name: camera_high                    
+
+        # Serial number for device identification (use Realsense Viewer to retrieve serial)
+        serial_no: "128422270115"            
+
+      - # Identifier for right wrist camera
+        name: camera_wrist_right             
+
+        # Serial number for device identification
+        serial_no: "128422271327"            
+
+      - # Identifier for left wrist camera
+        name: camera_wrist_left              
+
+        # Serial number for device identification
+        serial_no: "130322271087"            
+
+  # Base configuration for Aloha Mobile only (default: false)
+  base: true                                
