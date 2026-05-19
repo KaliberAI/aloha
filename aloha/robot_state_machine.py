@@ -10,7 +10,6 @@ from enum import Enum
 from typing import Dict, Callable, Optional, List, TYPE_CHECKING
 import time
 import math
-from aloha.robot_utils import START_ARM_POSE
 if TYPE_CHECKING:
     from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
@@ -24,6 +23,22 @@ class RobotMotionState(Enum):
     TRACK = "track"
     NOD = "nod"
     SLEEP = "sleep"
+    TRAY_FIND = "tray_find"
+
+
+# Default "gripper looking down" pose shared by OpeningState and TrayFindState.
+# Angles in degrees (waist=0, shoulder=5, elbow=6, forearm_roll=0,
+# wrist_angle=79, wrist_rotate=0) converted to radians here. Keeping both states
+# pointed at this single source prevents them from drifting apart and ensures
+# OPENING -> TRAY_FIND is essentially a no-op transition for the joints.
+TRAY_FIND_DEFAULT_POSE = [
+    0.0,                # waist
+    math.radians(5.0),  # shoulder
+    math.radians(6.0),  # elbow
+    0.0,                # forearm_roll
+    math.radians(79.0), # wrist_angle
+    0.0,                # wrist_rotate
+]
 
 
 # Key mappings for debug mode
@@ -32,8 +47,11 @@ STATE_KEY_MAP = {
     'W': RobotMotionState.WAVING,
     's': RobotMotionState.SLEEP,
     'S': RobotMotionState.SLEEP,
-    't': RobotMotionState.TRACK,
-    'T': RobotMotionState.TRACK,
+    # 'r' is used for patient-tracking (TRACK) because 't' is reserved for TRAY_FIND.
+    'r': RobotMotionState.TRACK,
+    'R': RobotMotionState.TRACK,
+    't': RobotMotionState.TRAY_FIND,
+    'T': RobotMotionState.TRAY_FIND,
     'n': RobotMotionState.NOD,
     'N': RobotMotionState.NOD,
     'o': RobotMotionState.OPENING,
@@ -110,8 +128,11 @@ class OpeningState(BaseMotionState):
     
     def __init__(self, state_machine: 'RobotStateMachine'):
         super().__init__(state_machine)
-        # self.target_pose = [0.0, -1.05, 0.42, 0.0, 1.05, 0.0]
-        self.target_pose = START_ARM_POSE[:6]
+        # Previously this was START_ARM_POSE[:6]. Repointed to the tray-find
+        # default pose so OPENING eases the robot directly into the
+        # gripper-down configuration. Pressing 't' afterwards then requires
+        # essentially zero entry travel.
+        self.target_pose = list(TRAY_FIND_DEFAULT_POSE)
         self.moving_time = 4.0
         self.start_time = None
         self.start_poses = {}
@@ -246,6 +267,170 @@ class WavingState(BaseMotionState):
             for entry, w in zip(entry_pose[:6], wave[:6])
         ]
         
+        return result
+
+
+class TrayFindState(BaseMotionState):
+    """
+    Tray-find state - sinusoidal waist sweep while the gripper stays pointing down.
+
+    Behavior:
+      - The arm first holds (and smoothly blends to) a fixed "gripper-down" pose
+        (``default_pose``).
+      - The waist joint (index 0) is then swept sinusoidally about that default.
+      - The wrist_rotate joint (index 5) is counter-rotated by the same delta so
+        that, in the world frame, the gripper's orientation about its tool axis
+        stays fixed while the base rotates.
+
+    Forward-kinematics rationale for the counter-rotation:
+      The waist rotates the whole arm about world +Z. When the gripper is pointing
+      straight down, the wrist_rotate axis (the gripper's tool axis) is parallel
+      (or anti-parallel) to world Z. In that configuration, a small waist delta
+      d_waist adds directly to the gripper's yaw about world Z, and a wrist_rotate
+      delta d_wrist adds (with a sign determined by URDF convention) to that same
+      yaw. The two can therefore be made to cancel by setting
+          d_wrist = wrist_compensation_sign * d_waist
+      For the Interbotix vx300s URDF the sign that produces a stationary end
+      effector is -1 (wrist moves opposite the waist). If that turns out to be
+      inverted on the real robot, flip ``wrist_compensation_sign`` to +1.
+
+      Note: this exact cancellation only holds while the gripper is actually
+      pointing along the world Z axis. Other joints are held at ``default_pose``
+      so that assumption stays valid for the entire sweep.
+    """
+
+    def __init__(self, state_machine: 'RobotStateMachine'):
+        super().__init__(state_machine)
+
+        # Default "gripper looking down" pose. Sourced from the shared
+        # TRAY_FIND_DEFAULT_POSE constant so OpeningState and TrayFindState
+        # are guaranteed to agree on the configuration.
+        # The relative kinematics (waist <-> wrist_rotate cancellation) work
+        # only while the gripper tool axis stays aligned with the world Z
+        # axis, so every joint except waist and wrist_rotate is held at this
+        # pose during the sweep.
+        self.default_pose = list(TRAY_FIND_DEFAULT_POSE)
+
+        # Sweep parameters (waist motion)
+        self.period = 16.0
+        self.amplitude = 0.8  # rad
+        self.omega = 2.0 * math.pi / self.period
+        self.phase = 0.0
+        self.last_update_time = None
+
+        # +1 = wrist_rotate moves WITH the waist, -1 = OPPOSITE direction.
+        # Empirically +1 produces the stationary-gripper behavior on this robot
+        # (the URDF sign convention makes the waist and wrist_rotate axes
+        # anti-parallel in the gripper-down pose).
+        self.wrist_compensation_sign = 1.0
+
+        # Smooth blend from entry pose into the default pose + sweep.
+        # OPENING already eases the robot into TRAY_FIND_DEFAULT_POSE, so by
+        # the time `t` is pressed entry_pose ~= default_pose and only a short
+        # blend is needed to soak up any small residual error.
+        self.blend_duration = 1.0
+        self.entry_poses = {}
+        self.blend_start_time = {}
+
+        # Pause support (used by tray_finder.py): when paused, phase stops
+        # advancing and generate_joint_commands returns the last-issued
+        # target so the motors hold position. Default is False so existing
+        # callers (tracking_clean.py debug 't' key) keep working unchanged.
+        self.paused: bool = False
+        # Per-robot copy of the most recent computed target. Read while
+        # paused so the held pose matches the last commanded sweep position.
+        self.last_target: Dict[str, List[float]] = {}
+
+    def on_enter(self, current_time: float):
+        """Reset phase and per-robot blend state on entry."""
+        self.phase = 0.0
+        self.last_update_time = current_time
+        self.entry_poses = {}
+        self.blend_start_time = {}
+
+    def update(self, current_time: float, dt: float):
+        """
+        Advance the sweep phase only after the blend-in is complete.
+
+        Holding phase at 0 during the blend keeps the target pinned at
+        ``default_pose`` (since sin(0) == 0), so the sweep grows out of the
+        default pose smoothly. Without this gating the phase advances while
+        the blend is still moving the robot toward the default, and by the
+        time the blend completes the waist is already near peak amplitude.
+        """
+        if self.last_update_time is None:
+            self.last_update_time = current_time
+            return
+        self.last_update_time = current_time
+
+        if not self.blend_start_time:
+            return
+
+        min_blend = min(
+            self.get_blend_factor(name, current_time)
+            for name in self.blend_start_time
+        )
+        if min_blend >= 1.0 and not self.paused:
+            self.phase += self.omega * dt
+
+    def set_paused(self, paused: bool) -> None:
+        """Pause or resume the sweep. Phase is preserved across pauses."""
+        self.paused = paused
+
+    def is_paused(self) -> bool:
+        return self.paused
+
+    def get_blend_factor(self, robot_name: str, current_time: float) -> float:
+        """Calculate ease-in-out blend factor for smooth entry (0 to 1)."""
+        if robot_name not in self.blend_start_time:
+            return 1.0
+        elapsed = current_time - self.blend_start_time[robot_name]
+        u = elapsed / max(1e-6, self.blend_duration)
+        u = max(0.0, min(1.0, u))
+        return 0.5 - 0.5 * math.cos(math.pi * u)
+
+    def generate_joint_commands(
+        self,
+        robot_name: str,
+        current_joints: List[float],
+    ) -> List[float]:
+        """Hold default_pose, sweep waist, and counter-rotate wrist_rotate.
+
+        While paused, return the last-issued target so the motors hold the
+        sweep position they were at when pause was triggered. ``phase`` is
+        already frozen via update(), so on resume the sweep continues from
+        the same waist angle.
+        """
+        # If we have already issued at least one command for this robot
+        # and we're paused, just hold that pose. (If we have never issued
+        # one, fall through to the normal path so we can compute a sensible
+        # initial target rather than blocking.)
+        if self.paused and robot_name in self.last_target:
+            return list(self.last_target[robot_name])
+
+        if robot_name not in self.entry_poses:
+            self.entry_poses[robot_name] = list(current_joints[:6])
+            self.blend_start_time[robot_name] = time.time()
+
+        entry_pose = self.entry_poses[robot_name]
+
+        # Waist delta from a sine sweep around 0; at phase=0 the delta is 0,
+        # which means the blended target starts exactly at default_pose.
+        waist_delta = self.amplitude * math.sin(self.phase)
+
+        target = list(self.default_pose)
+        target[0] = self.default_pose[0] + waist_delta
+        target[5] = self.default_pose[5] + self.wrist_compensation_sign * waist_delta
+
+        # Smooth blend from entry pose into the target.
+        blend = self.get_blend_factor(robot_name, time.time())
+        result = [
+            (1.0 - blend) * e + blend * t
+            for e, t in zip(entry_pose[:6], target[:6])
+        ]
+
+        # Cache the latest computed command so a subsequent pause can hold it.
+        self.last_target[robot_name] = list(result)
         return result
 
 
@@ -440,6 +625,7 @@ class RobotStateMachine:
             RobotMotionState.TRACK: TrackState(self),
             RobotMotionState.NOD: NodState(self),
             RobotMotionState.SLEEP: SleepState(self),
+            RobotMotionState.TRAY_FIND: TrayFindState(self),
         }
         
         # Per-robot smoothing state

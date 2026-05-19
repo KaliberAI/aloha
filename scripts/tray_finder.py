@@ -53,14 +53,24 @@ GPT-style tool schema::
 LLM-side function bodies (Python)::
 
     import requests
-    requests.post(f"http://{ROBOT_HOST}:8080/find_tray",
-                  json={"tray_id": tray_id}, timeout=2)
+    # /find_tray BLOCKS until the tag is detected, so set a long timeout
+    # (or None). Returns {"ok": true, "tray_id": <int>, "found": true}.
+    resp = requests.post(
+        f"http://{ROBOT_HOST}:8080/find_tray",
+        json={"tray_id": tray_id},
+        timeout=None,
+    )
+    # /sleep is non-blocking. Returns {"ok": true}.
     requests.post(f"http://{ROBOT_HOST}:8080/sleep", timeout=2)
 
 HTTP API
 --------
 ``POST /find_tray``  body ``{"tray_id": <int>}``
-    Set the target tag id and start (or resume) sweeping.
+    Set the target tag id and start (or resume) sweeping. **Blocks** until
+    the tag is observed by the AprilTag node, then returns
+    ``{"ok": true, "tray_id": <int>, "found": true}``. If a safety timeout
+    fires (default 600 s) or ``/sleep`` aborts the search,
+    ``"found": false`` is returned instead.
 
 ``POST /sleep``  no body required
     Stop sweeping, clear the target id, and ease the arm into the sleep pose.
@@ -116,6 +126,12 @@ except ImportError as e:  # pragma: no cover - import-time error path
 
 
 APRILTAG_TOPIC = '/apriltag_ros_continuous_detector_node/tag_detections'
+
+# Maximum time the /find_tray HTTP request will block waiting for a
+# detection before returning {"found": false}. The user-facing assumption
+# is "the tray will always be found", so this is just a safety net to
+# stop a stuck request from hanging forever.
+FIND_TRAY_WAIT_TIMEOUT_S: float = 600.0
 
 
 def setup_robots(
@@ -182,6 +198,14 @@ class TrayFinderController:
         self.target_id: Optional[int] = None
         self._lock = threading.Lock()
 
+        # Tray-found signaling: the HTTP /find_tray handler blocks on this
+        # event after setting a target. tag_callback wakes it by recording
+        # the matched id in `_last_found_id` and setting the event.
+        # `_last_found_id` is also cleared when the user calls /sleep so
+        # any pending waiter unblocks cleanly with found=False.
+        self._found_event = threading.Event()
+        self._last_found_id: Optional[int] = None
+
         # Keep a direct handle to TrayFindState so we don't repeatedly
         # look it up through the state machine.
         self._tray_state = self.state_machine.states[RobotMotionState.TRAY_FIND]
@@ -227,6 +251,11 @@ class TrayFinderController:
         """Set/replace the target tray id and start (or resume) the sweep."""
         with self._lock:
             self.target_id = tray_id
+            # Arm the found-event for the new search. Any previous waiter
+            # whose target hasn't fired yet will simply wait for the new
+            # target's detection instead.
+            self._last_found_id = None
+            self._found_event.clear()
             self._tray_state.set_paused(False)
 
             current = self.state_machine.get_state()
@@ -253,7 +282,26 @@ class TrayFinderController:
             self.state_machine.transition_to(
                 RobotMotionState.SLEEP, time.time()
             )
+            # Wake any pending /find_tray waiter with no found id so the
+            # request returns {"found": false} rather than hanging.
+            self._last_found_id = None
+            self._found_event.set()
             self.node._logger.info('[TRAY_FINDER] /sleep -> returning to SLEEP pose')
+
+    def wait_for_found(self, tray_id: int, timeout: float) -> bool:
+        """
+        Block until the given tray id is detected or `timeout` expires.
+
+        Must be called WITHOUT holding `self._lock` - the tag callback needs
+        the lock to signal the event.
+
+        Returns True if a matching detection was observed, False otherwise.
+        """
+        signaled = self._found_event.wait(timeout=timeout)
+        if not signaled:
+            return False
+        with self._lock:
+            return self._last_found_id == tray_id
 
     def get_status(self) -> dict:
         """Snapshot of internal state for the GET /status endpoint."""
@@ -284,6 +332,12 @@ class TrayFinderController:
                         self.node._logger.info(
                             f'[TRAY_FINDER] Tray {target} detected - freezing sweep'
                         )
+                    # Always signal the event on a match - even if we were
+                    # already paused (e.g. a second detection of the same
+                    # tag), so a freshly-arrived /find_tray waiter for the
+                    # same id returns immediately.
+                    self._last_found_id = target
+                    self._found_event.set()
                     return
 
     # ------------------------------------------------------------------
@@ -491,7 +545,18 @@ def _make_request_handler(controller: TrayFinderController, logger):
                     })
                     return
                 controller.set_target(tray_id)
-                self._send_json(200, {'ok': True, 'target_id': tray_id})
+                # Block until the tag is observed by the AprilTag node (or
+                # the safety timeout fires / /sleep aborts the search).
+                # The LLM-side requests.post() timeout must be set high
+                # enough to cover this wait (or to None).
+                found = controller.wait_for_found(
+                    tray_id, timeout=FIND_TRAY_WAIT_TIMEOUT_S
+                )
+                self._send_json(200, {
+                    'ok': True,
+                    'tray_id': tray_id,
+                    'found': found,
+                })
                 return
 
             if self.path == '/sleep':

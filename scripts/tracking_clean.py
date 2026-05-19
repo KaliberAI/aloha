@@ -58,6 +58,7 @@ class RobotTrackingController:
         2: RobotMotionState.WAVING,
         3: RobotMotionState.NOD,
         4: RobotMotionState.TRACK,
+        5: RobotMotionState.TRAY_FIND,
     }
     
     def __init__(
@@ -113,6 +114,7 @@ class RobotTrackingController:
             self.node._logger.info('[ROS_CONTROL]   2 - WAVING')
             self.node._logger.info('[ROS_CONTROL]   3 - NOD')
             self.node._logger.info('[ROS_CONTROL]   4 - TRACK')
+            self.node._logger.info('[ROS_CONTROL]   5 - TRAY_FIND')
             self.node._logger.info('=' * 60)
     
     def setup_subscribers(self):
@@ -149,7 +151,7 @@ class RobotTrackingController:
             )
         else:
             self.node._logger.warn(
-                f'[ROS_CONTROL] Invalid state ID: {state_id}. Valid range: 0-4'
+                f'[ROS_CONTROL] Invalid state ID: {state_id}. Valid range: 0-5'
             )
     
     def setup_terminal(self):
@@ -230,6 +232,10 @@ class RobotTrackingController:
             elif state == RobotMotionState.TRACK:
                 track_state = self.state_machine.states[state]
                 self.node._logger.info(f'[DEBUG] Patient X Distance: {self.state_machine.x_distance:.1f}')
+            elif state == RobotMotionState.TRAY_FIND:
+                tray_state = self.state_machine.states[state]
+                self.node._logger.info(f'[DEBUG] TrayFind Phase: {tray_state.phase:.3f}')
+                self.node._logger.info(f'[DEBUG] TrayFind Default Pose: {tray_state.default_pose}')
         
         elif key in ('h', 'H'):
             # Print help
